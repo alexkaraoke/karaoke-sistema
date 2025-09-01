@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: karaoke-alex
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python servidor_pagseguro.py
+    envVars:
+      - key: PORT
+        value: 8000
