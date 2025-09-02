@@ -1,68 +1,75 @@
 """
-Sistema de Pagamento Automático com PagSeguro
-Integração completa para Karaokê - Alex
+Sistema Karaokê Unificado - Mercado Pago
+Suporte para .AGB (Windows) e .MP4 (Android TV Box)
 """
 
 import os
 import json
+import sqlite3
 import hashlib
 import requests
-import sqlite3
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, render_template_string
-from threading import Thread
-import time
+import mercadopago
 
-# Configurações PagSeguro
-PAGSEGURO_EMAIL = "alexdorj@gmail.com"  # SUBSTITUIR pelo seu email do PagSeguro
-PAGSEGURO_TOKEN = "fc0031b8-b276-40ce-8bed-632df68a537a0462468b4cbc8d6e444443968856e9b7c2c0-0c62-4572-8f5f-64ee6fefd8ac"  # SUBSTITUIR pelo seu token do PagSeguro
-PAGSEGURO_SANDBOX = False  # True para testes, False para produção
+# Configurações Mercado Pago
+MERCADOPAGO_ACCESS_TOKEN = "APP_USR-828706020452811-090212-31de142a389d647842d7cb466b9882be-64322291"  # SUBSTITUIR pelo seu token
+MERCADOPAGO_PUBLIC_KEY = "APP_USR-f1658047-f49a-4018-8df2-61d9646b6e68"  # SUBSTITUIR pela sua chave pública
 
-# URLs do PagSeguro
-if PAGSEGURO_SANDBOX:
-    PAGSEGURO_URL = "https://sandbox.pagseguro.uol.com.br"
-    PAGSEGURO_WS = "https://ws.sandbox.pagseguro.uol.com.br"
-else:
-    PAGSEGURO_URL = "https://pagseguro.uol.com.br"
-    PAGSEGURO_WS = "https://ws.pagseguro.uol.com.br"
+# Inicializar SDK Mercado Pago
+sdk = mercadopago.SDK(MERCADOPAGO_ACCESS_TOKEN)
 
 app = Flask(__name__)
 
-class SistemaPagamentoPagSeguro:
+class SistemaUnificadoMercadoPago:
     def __init__(self):
         self.criar_banco()
         self.configurar_rotas()
         
     def criar_banco(self):
-        """Cria banco de dados para controle de pagamentos"""
-        self.conn = sqlite3.connect('pagamentos_karaoke.db', check_same_thread=False)
+        """Cria banco de dados unificado"""
+        self.conn = sqlite3.connect('karaoke_unificado.db', check_same_thread=False)
         c = self.conn.cursor()
         
+        # Tabela de clientes expandida
+        c.execute('''CREATE TABLE IF NOT EXISTS clientes
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      machine_id TEXT UNIQUE,
+                      tipo_sistema TEXT,  -- 'windows' ou 'android'
+                      extensao TEXT,      -- '.agb' ou '.mp4'
+                      nome TEXT,
+                      ultimo_acesso TEXT,
+                      ultima_atualizacao TEXT,
+                      pacotes_atuais TEXT,
+                      status TEXT)''')
+        
+        # Tabela de transações Mercado Pago
         c.execute('''CREATE TABLE IF NOT EXISTS transacoes
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       machine_id TEXT,
-                      codigo_pagseguro TEXT UNIQUE,
-                      reference TEXT,
+                      payment_id TEXT UNIQUE,
+                      preference_id TEXT,
                       pacotes TEXT,
+                      tipo_arquivo TEXT,
                       valor REAL,
                       status TEXT,
                       data_criacao TEXT,
                       data_pagamento TEXT,
-                      tipo_pagamento TEXT,
-                      link_pagamento TEXT)''')
+                      tipo_pagamento TEXT)''')
         
+        # Tabela de liberações
         c.execute('''CREATE TABLE IF NOT EXISTS liberacoes
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       machine_id TEXT,
                       pacotes_liberados TEXT,
+                      tipo_arquivo TEXT,
                       data_liberacao TEXT,
-                      transacao_id INTEGER,
                       baixado INTEGER DEFAULT 0)''')
         
         self.conn.commit()
     
     def configurar_rotas(self):
-        """Configura todas as rotas do servidor"""
+        """Configura todas as rotas do sistema"""
         
         @app.route('/')
         def index():
@@ -70,43 +77,46 @@ class SistemaPagamentoPagSeguro:
         
         @app.route('/cliente/<machine_id>')
         def pagina_cliente(machine_id):
-            return self.gerar_pagina_cliente(machine_id)
+            # Detectar tipo de cliente pelo ID
+            tipo = 'android' if machine_id.startswith('APK-') else 'windows'
+            return self.gerar_pagina_cliente(machine_id, tipo)
         
         @app.route('/api/criar_pagamento', methods=['POST'])
         def criar_pagamento():
-            return self.criar_checkout_pagseguro(request.json)
+            return self.criar_checkout_mercadopago(request.json)
         
-        @app.route('/api/notificacao_pagseguro', methods=['POST'])
-        def notificacao_pagseguro():
-            return self.processar_notificacao_pagseguro(request.form)
+        @app.route('/api/webhook_mercadopago', methods=['POST'])
+        def webhook_mercadopago():
+            return self.processar_webhook_mercadopago(request.json)
         
         @app.route('/api/verificar_liberacao/<machine_id>')
         def verificar_liberacao(machine_id):
             return self.verificar_pacotes_liberados(machine_id)
         
-        @app.route('/api/confirmar_download/<machine_id>', methods=['POST'])
-        def confirmar_download(machine_id):
-            return self.marcar_como_baixado(machine_id)
+        @app.route('/api/diagnostico_android', methods=['POST'])
+        def diagnostico_android():
+            """Endpoint específico para APK Android"""
+            return self.analisar_cliente_android(request.json)
     
     def pagina_inicial(self):
-        """Página inicial do sistema"""
+        """Dashboard do sistema"""
         html = """
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Sistema Karaokê - Pagamento Automático</title>
+            <title>Sistema Karaokê Unificado - Mercado Pago</title>
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
+                * { margin: 0; padding: 0; box-sizing: border-box; }
                 body {
                     font-family: 'Segoe UI', Arial, sans-serif;
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    margin: 0;
-                    padding: 20px;
+                    background: linear-gradient(135deg, #00b4d8 0%, #0077b6 100%);
                     min-height: 100vh;
+                    padding: 20px;
                 }
                 .container {
-                    max-width: 1200px;
+                    max-width: 1400px;
                     margin: 0 auto;
                     background: white;
                     border-radius: 20px;
@@ -117,81 +127,125 @@ class SistemaPagamentoPagSeguro:
                     color: #333;
                     text-align: center;
                     margin-bottom: 30px;
+                    font-size: 32px;
+                }
+                .status-grid {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                    gap: 20px;
+                    margin: 30px 0;
                 }
                 .status-card {
                     background: #f8f9fa;
                     border-radius: 10px;
                     padding: 20px;
-                    margin: 20px 0;
-                    border-left: 5px solid #4CAF50;
+                    border-left: 5px solid #00b4d8;
+                }
+                .status-card.success {
+                    border-left-color: #4CAF50;
                 }
                 .status-card h3 {
-                    margin-top: 0;
+                    margin-bottom: 15px;
                     color: #333;
                 }
                 .info-grid {
                     display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
                     gap: 20px;
                     margin: 30px 0;
                 }
                 .info-box {
-                    background: #f0f0f0;
-                    padding: 20px;
-                    border-radius: 10px;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    padding: 25px;
+                    border-radius: 15px;
                     text-align: center;
+                    color: white;
+                    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
                 }
                 .info-box .number {
-                    font-size: 36px;
+                    font-size: 42px;
                     font-weight: bold;
-                    color: #764ba2;
+                    margin-bottom: 10px;
                 }
                 .info-box .label {
-                    color: #666;
-                    margin-top: 10px;
+                    font-size: 14px;
+                    opacity: 0.9;
                 }
+                .system-type {
+                    display: inline-block;
+                    padding: 5px 15px;
+                    border-radius: 20px;
+                    font-size: 12px;
+                    font-weight: bold;
+                    margin: 5px;
+                }
+                .windows { background: #0078d4; color: white; }
+                .android { background: #3ddc84; color: white; }
             </style>
         </head>
         <body>
             <div class="container">
-                <h1>🎤 Sistema Karaokê - Pagamento Automático</h1>
+                <h1>🎤 Sistema Karaokê Unificado</h1>
+                <h2 style="text-align: center; color: #666; margin-bottom: 30px;">
+                    Mercado Pago + Windows (.agb) + Android (.mp4)
+                </h2>
                 
-                <div class="status-card">
-                    <h3>✅ Sistema Online e Funcionando</h3>
-                    <p>Integração PagSeguro: <strong>ATIVA</strong></p>
-                    <p>Modo: <strong>""" + ("SANDBOX" if PAGSEGURO_SANDBOX else "PRODUÇÃO") + """</strong></p>
+                <div class="status-card success">
+                    <h3>✅ Sistema Online</h3>
+                    <p>Integração Mercado Pago: <strong>ATIVA</strong></p>
+                    <p>Servidor: <strong>karaoke-alex.onrender.com</strong></p>
+                    <div style="margin-top: 10px;">
+                        <span class="system-type windows">Windows .AGB</span>
+                        <span class="system-type android">Android .MP4</span>
+                    </div>
                 </div>
                 
                 <div class="info-grid">
                     <div class="info-box">
-                        <div class="number" id="total-vendas">0</div>
+                        <div class="number" id="vendas-hoje">0</div>
                         <div class="label">Vendas Hoje</div>
                     </div>
-                    <div class="info-box">
-                        <div class="number" id="clientes-ativos">0</div>
-                        <div class="label">Clientes Ativos</div>
+                    <div class="info-box" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+                        <div class="number" id="clientes-windows">0</div>
+                        <div class="label">Clientes Windows</div>
                     </div>
-                    <div class="info-box">
-                        <div class="number" id="receita-mes">R$ 0,00</div>
+                    <div class="info-box" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
+                        <div class="number" id="clientes-android">0</div>
+                        <div class="label">Clientes Android</div>
+                    </div>
+                    <div class="info-box" style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);">
+                        <div class="number" id="receita-mes">R$ 0</div>
                         <div class="label">Receita do Mês</div>
                     </div>
                 </div>
                 
-                <div class="status-card">
-                    <h3>📊 Últimas Transações</h3>
-                    <div id="transacoes-recentes">Carregando...</div>
+                <div class="status-grid">
+                    <div class="status-card">
+                        <h3>📊 Estatísticas Windows (.AGB)</h3>
+                        <p>Máquinas ativas: <strong id="windows-ativas">0</strong></p>
+                        <p>Pacotes vendidos: <strong id="windows-pacotes">0</strong></p>
+                        <p>Última atualização: <strong id="windows-ultima">-</strong></p>
+                    </div>
+                    
+                    <div class="status-card">
+                        <h3>📱 Estatísticas Android (.MP4)</h3>
+                        <p>TV Boxes ativas: <strong id="android-ativas">0</strong></p>
+                        <p>Pacotes vendidos: <strong id="android-pacotes">0</strong></p>
+                        <p>Última atualização: <strong id="android-ultima">-</strong></p>
+                    </div>
                 </div>
             </div>
             
             <script>
-                // Atualizar estatísticas a cada 30 segundos
+                // Atualizar estatísticas
                 function atualizarStats() {
                     fetch('/api/estatisticas')
                         .then(r => r.json())
                         .then(data => {
-                            document.getElementById('total-vendas').innerText = data.vendas_hoje;
-                            document.getElementById('clientes-ativos').innerText = data.clientes_ativos;
-                            document.getElementById('receita-mes').innerText = 'R$ ' + data.receita_mes.toFixed(2);
+                            document.getElementById('vendas-hoje').innerText = data.vendas_hoje || 0;
+                            document.getElementById('clientes-windows').innerText = data.clientes_windows || 0;
+                            document.getElementById('clientes-android').innerText = data.clientes_android || 0;
+                            document.getElementById('receita-mes').innerText = 'R$ ' + (data.receita_mes || 0).toFixed(2);
                         });
                 }
                 
@@ -203,94 +257,106 @@ class SistemaPagamentoPagSeguro:
         """
         return html
     
-    def gerar_pagina_cliente(self, machine_id):
-        """Gera página de pagamento para o cliente"""
-        # Buscar dados do cliente e pacotes faltantes
-        # Este seria integrado com seu sistema de análise
+    def gerar_pagina_cliente(self, machine_id, tipo_sistema):
+        """Gera página de pagamento adaptada ao tipo de cliente"""
         
-        html = """
+        # Determinar extensão baseado no tipo
+        extensao = '.mp4' if tipo_sistema == 'android' else '.agb'
+        titulo_sistema = 'TV Box Android' if tipo_sistema == 'android' else 'Windows Professional'
+        
+        html = f"""
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Atualização Karaokê - Pagamento</title>
+            <title>Atualização Karaokê - {titulo_sistema}</title>
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1">
+            <script src="https://sdk.mercadopago.com/js/v2"></script>
             <style>
-                * { margin: 0; padding: 0; box-sizing: border-box; }
-                body {
+                * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                body {{
                     font-family: 'Segoe UI', Arial, sans-serif;
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    background: linear-gradient(135deg, #00b4d8 0%, #0077b6 100%);
                     min-height: 100vh;
                     padding: 20px;
-                }
-                .container {
+                }}
+                .container {{
                     max-width: 600px;
                     margin: 0 auto;
                     background: white;
                     border-radius: 20px;
                     padding: 30px;
                     box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-                }
-                h1 {
-                    color: #333;
+                }}
+                .header {{
                     text-align: center;
-                    margin-bottom: 10px;
-                    font-size: 24px;
-                }
-                .machine-id {
-                    text-align: center;
-                    color: #666;
                     margin-bottom: 30px;
+                }}
+                .system-badge {{
+                    display: inline-block;
+                    padding: 8px 20px;
+                    border-radius: 25px;
                     font-size: 14px;
-                }
-                .pacotes-section {
+                    font-weight: bold;
+                    margin-bottom: 15px;
+                    {'background: #3ddc84; color: white;' if tipo_sistema == 'android' else 'background: #0078d4; color: white;'}
+                }}
+                .pacotes-section {{
                     background: #f8f9fa;
                     border-radius: 10px;
                     padding: 20px;
                     margin: 20px 0;
-                }
-                .pacote-item {
+                }}
+                .pacote-item {{
                     display: flex;
                     justify-content: space-between;
                     align-items: center;
-                    padding: 10px;
-                    margin: 5px 0;
+                    padding: 12px;
+                    margin: 8px 0;
                     background: white;
-                    border-radius: 5px;
-                }
-                .pacote-item input[type="checkbox"] {
+                    border-radius: 8px;
+                    transition: all 0.3s;
+                }}
+                .pacote-item:hover {{
+                    box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+                }}
+                .pacote-item input[type="checkbox"] {{
                     width: 20px;
                     height: 20px;
                     cursor: pointer;
-                }
-                .preco {
+                }}
+                .preco {{
                     font-weight: bold;
-                    color: #4CAF50;
-                }
-                .pre-venda {
-                    background: #fff3cd;
-                    color: #856404;
-                    padding: 2px 8px;
-                    border-radius: 3px;
-                    font-size: 12px;
-                }
-                .total-section {
-                    background: #28a745;
+                    color: #00b4d8;
+                    font-size: 18px;
+                }}
+                .pre-venda {{
+                    background: #ffd60a;
+                    color: #003566;
+                    padding: 3px 10px;
+                    border-radius: 15px;
+                    font-size: 11px;
+                    font-weight: bold;
+                    margin-left: 10px;
+                }}
+                .total-section {{
+                    background: linear-gradient(135deg, #00b4d8 0%, #0077b6 100%);
                     color: white;
-                    border-radius: 10px;
-                    padding: 20px;
+                    border-radius: 15px;
+                    padding: 25px;
                     margin: 20px 0;
                     text-align: center;
-                }
-                .total-valor {
-                    font-size: 36px;
+                }}
+                .total-valor {{
+                    font-size: 42px;
                     font-weight: bold;
-                }
-                .btn-pagar {
-                    background: #FFC107;
-                    color: #333;
+                    margin: 10px 0;
+                }}
+                .btn-pagar {{
+                    background: #009ee3;
+                    color: white;
                     border: none;
-                    padding: 15px 40px;
+                    padding: 18px 40px;
                     font-size: 18px;
                     font-weight: bold;
                     border-radius: 50px;
@@ -298,83 +364,32 @@ class SistemaPagamentoPagSeguro:
                     width: 100%;
                     margin-top: 20px;
                     transition: all 0.3s;
-                }
-                .btn-pagar:hover {
-                    background: #FFB300;
-                    transform: scale(1.05);
-                }
-                .btn-pagar:disabled {
-                    background: #ccc;
-                    cursor: not-allowed;
-                    transform: scale(1);
-                }
-                .plano-anual {
-                    background: #e3f2fd;
-                    border: 2px solid #2196F3;
-                    border-radius: 10px;
-                    padding: 15px;
-                    margin: 20px 0;
-                }
-                .creditos-box {
-                    background: #f3e5f5;
-                    border: 2px solid #9c27b0;
-                    border-radius: 10px;
-                    padding: 15px;
-                    margin: 20px 0;
-                }
-                .loading {
-                    display: none;
-                    text-align: center;
-                    margin: 20px 0;
-                }
-                .loading.active {
-                    display: block;
-                }
-                @keyframes spin {
-                    0% { transform: rotate(0deg); }
-                    100% { transform: rotate(360deg); }
-                }
-                .spinner {
-                    border: 4px solid #f3f3f3;
-                    border-top: 4px solid #764ba2;
-                    border-radius: 50%;
-                    width: 40px;
-                    height: 40px;
-                    animation: spin 1s linear infinite;
-                    margin: 0 auto;
-                }
+                    box-shadow: 0 10px 30px rgba(0,158,227,0.3);
+                }}
+                .btn-pagar:hover {{
+                    transform: translateY(-2px);
+                    box-shadow: 0 15px 40px rgba(0,158,227,0.4);
+                }}
+                #cho-container {{
+                    margin-top: 20px;
+                }}
             </style>
         </head>
         <body>
             <div class="container">
-                <h1>🎤 Atualização Karaokê</h1>
-                <div class="machine-id">Máquina: """ + machine_id + """</div>
+                <div class="header">
+                    <span class="system-badge">
+                        {'📱 Android TV Box - MP4' if tipo_sistema == 'android' else '💻 Windows Professional - AGB'}
+                    </span>
+                    <h1>🎤 Atualização Karaokê</h1>
+                    <p style="color: #666;">Máquina: {machine_id}</p>
+                </div>
                 
                 <div class="pacotes-section">
-                    <h3>📦 Pacotes Disponíveis</h3>
+                    <h3>📦 Pacotes Disponíveis ({extensao})</h3>
                     <div id="lista-pacotes">
                         <!-- Pacotes serão carregados aqui -->
                     </div>
-                </div>
-                
-                <div class="creditos-box">
-                    <h3>💳 Comprar Créditos</h3>
-                    <p>Economize comprando créditos antecipadamente!</p>
-                    <select id="pacote-creditos" onchange="atualizarTotal()">
-                        <option value="0">Não comprar créditos</option>
-                        <option value="10">10 créditos - R$ 120,00 (economia R$ 30)</option>
-                        <option value="20">20 créditos - R$ 250,00 (economia R$ 50)</option>
-                        <option value="50">50 créditos - R$ 600,00 (economia R$ 150)</option>
-                    </select>
-                </div>
-                
-                <div class="plano-anual">
-                    <h3>📅 Plano Anual</h3>
-                    <label>
-                        <input type="checkbox" id="plano-anual" onchange="atualizarTotal()">
-                        Contratar Plano Anual - R$ 600,00
-                        <br><small>Inclui todos os pacotes do ano!</small>
-                    </label>
                 </div>
                 
                 <div class="total-section">
@@ -384,137 +399,103 @@ class SistemaPagamentoPagSeguro:
                 </div>
                 
                 <button class="btn-pagar" id="btn-pagar" onclick="processarPagamento()">
-                    PAGAR COM PAGSEGURO
+                    💳 PAGAR COM MERCADO PAGO
                 </button>
                 
-                <div class="loading" id="loading">
-                    <div class="spinner"></div>
-                    <p>Processando pagamento...</p>
-                </div>
+                <div id="cho-container"></div>
             </div>
             
             <script>
-                const machineId = '""" + machine_id + """';
+                const mp = new MercadoPago('{MERCADOPAGO_PUBLIC_KEY}');
+                const machineId = '{machine_id}';
+                const tipoSistema = '{tipo_sistema}';
+                const extensao = '{extensao}';
                 let pacotesSelecionados = [];
                 let valorTotal = 0;
                 
                 // Carregar pacotes disponíveis
-                function carregarPacotes() {
+                function carregarPacotes() {{
                     // Simulação - seria uma chamada real à API
                     const pacotes = [
-                        {codigo: '41A', preco: 25.00, preVenda: false},
-                        {codigo: '41B', preco: 25.00, preVenda: false},
-                        {codigo: '41C', preco: 15.00, preVenda: true},
-                        {codigo: '41D', preco: 15.00, preVenda: true}
+                        {{codigo: '41A', preco: 25.00, preVenda: false}},
+                        {{codigo: '41B', preco: 25.00, preVenda: false}},
+                        {{codigo: '41C', preco: 15.00, preVenda: true}},
+                        {{codigo: '41D', preco: 15.00, preVenda: true}}
                     ];
                     
                     let html = '';
-                    pacotes.forEach(p => {
+                    pacotes.forEach(p => {{
                         html += `
                             <div class="pacote-item">
-                                <label>
-                                    <input type="checkbox" value="${p.codigo}" data-preco="${p.preco}" onchange="atualizarTotal()">
-                                    Pacote ${p.codigo}
-                                    ${p.preVenda ? '<span class="pre-venda">PRÉ-VENDA</span>' : ''}
+                                <label style="display: flex; align-items: center;">
+                                    <input type="checkbox" value="${{p.codigo}}" data-preco="${{p.preco}}" onchange="atualizarTotal()">
+                                    <span style="margin-left: 10px;">
+                                        Pacote ${{p.codigo}} (${{extensao}})
+                                        ${{p.preVenda ? '<span class="pre-venda">PRÉ-VENDA</span>' : ''}}
+                                    </span>
                                 </label>
-                                <span class="preco">R$ ${p.preco.toFixed(2)}</span>
+                                <span class="preco">R$ ${{p.preco.toFixed(2)}}</span>
                             </div>
                         `;
-                    });
+                    }});
                     document.getElementById('lista-pacotes').innerHTML = html;
-                }
+                }}
                 
-                function atualizarTotal() {
+                function atualizarTotal() {{
                     let total = 0;
-                    let economia = 0;
                     
-                    // Calcular pacotes selecionados
                     const checkboxes = document.querySelectorAll('.pacote-item input[type="checkbox"]:checked');
                     pacotesSelecionados = [];
-                    checkboxes.forEach(cb => {
+                    checkboxes.forEach(cb => {{
                         pacotesSelecionados.push(cb.value);
                         total += parseFloat(cb.dataset.preco);
-                    });
+                    }});
                     
-                    // Verificar plano anual
-                    if (document.getElementById('plano-anual').checked) {
-                        total = 600;
-                        document.getElementById('economia').innerText = 'Plano Anual - Todos os pacotes incluídos!';
-                    }
-                    
-                    // Verificar créditos
-                    const creditos = document.getElementById('pacote-creditos').value;
-                    if (creditos > 0) {
-                        if (creditos == 10) {
-                            total += 120;
-                            economia += 30;
-                        } else if (creditos == 20) {
-                            total += 250;
-                            economia += 50;
-                        } else if (creditos == 50) {
-                            total += 600;
-                            economia += 150;
-                        }
-                    }
-                    
-                    // Aplicar teto de R$ 500 se necessário
+                    // Aplicar teto de R$ 500
                     const tetoMaximo = 500;
-                    if (total > tetoMaximo && !document.getElementById('plano-anual').checked) {
-                        economia += total - tetoMaximo;
+                    let economia = 0;
+                    if (total > tetoMaximo) {{
+                        economia = total - tetoMaximo;
                         total = tetoMaximo;
-                        document.getElementById('economia').innerText = `⭐ Promoção aplicada! Economia de R$ ${economia.toFixed(2)}`;
-                    } else if (economia > 0) {
-                        document.getElementById('economia').innerText = `Economia de R$ ${economia.toFixed(2)}`;
-                    }
+                        document.getElementById('economia').innerHTML = 
+                            `⭐ Promoção aplicada! Economia de R$ ${{economia.toFixed(2)}}`;
+                    }}
                     
                     valorTotal = total;
-                    document.getElementById('valor-total').innerText = `R$ ${total.toFixed(2)}`;
-                    
-                    // Habilitar/desabilitar botão
+                    document.getElementById('valor-total').innerText = `R$ ${{total.toFixed(2)}}`;
                     document.getElementById('btn-pagar').disabled = total === 0;
-                }
+                }}
                 
-                function processarPagamento() {
-                    if (valorTotal === 0) {
-                        alert('Selecione ao menos um item!');
+                function processarPagamento() {{
+                    if (valorTotal === 0) {{
+                        alert('Selecione ao menos um pacote!');
                         return;
-                    }
+                    }}
                     
-                    document.getElementById('loading').classList.add('active');
-                    document.getElementById('btn-pagar').disabled = true;
-                    
-                    // Preparar dados
-                    const dados = {
+                    const dados = {{
                         machine_id: machineId,
+                        tipo_sistema: tipoSistema,
+                        extensao: extensao,
                         pacotes: pacotesSelecionados,
-                        valor: valorTotal,
-                        plano_anual: document.getElementById('plano-anual').checked,
-                        creditos: document.getElementById('pacote-creditos').value
-                    };
+                        valor: valorTotal
+                    }};
                     
-                    // Enviar para criar checkout no PagSeguro
-                    fetch('/api/criar_pagamento', {
+                    // Criar preferência no Mercado Pago
+                    fetch('/api/criar_pagamento', {{
                         method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
+                        headers: {{'Content-Type': 'application/json'}},
                         body: JSON.stringify(dados)
-                    })
+                    }})
                     .then(r => r.json())
-                    .then(data => {
-                        if (data.success) {
-                            // Redirecionar para PagSeguro
-                            window.location.href = data.checkout_url;
-                        } else {
-                            alert('Erro ao processar pagamento: ' + data.error);
-                            document.getElementById('loading').classList.remove('active');
-                            document.getElementById('btn-pagar').disabled = false;
-                        }
-                    })
-                    .catch(error => {
-                        alert('Erro de conexão. Tente novamente.');
-                        document.getElementById('loading').classList.remove('active');
-                        document.getElementById('btn-pagar').disabled = false;
-                    });
-                }
+                    .then(data => {{
+                        if (data.success) {{
+                            // Redirecionar para checkout do Mercado Pago
+                            window.location.href = data.init_point;
+                        }} else {{
+                            alert('Erro ao processar pagamento');
+                        }}
+                    }});
+                }}
                 
                 // Inicializar
                 carregarPacotes();
@@ -525,182 +506,166 @@ class SistemaPagamentoPagSeguro:
         """
         return html
     
-    def criar_checkout_pagseguro(self, dados):
-        """Cria checkout no PagSeguro e retorna link de pagamento"""
+    def criar_checkout_mercadopago(self, dados):
+        """Cria checkout no Mercado Pago"""
         try:
-            # Preparar XML para PagSeguro
-            xml_checkout = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-            <checkout>
-                <currency>BRL</currency>
-                <items>
-                    <item>
-                        <id>1</id>
-                        <description>Atualizacao Karaoke - {', '.join(dados.get('pacotes', []))}</description>
-                        <amount>{dados['valor']:.2f}</amount>
-                        <quantity>1</quantity>
-                    </item>
-                </items>
-                <reference>{dados['machine_id']}-{int(time.time())}</reference>
-                <sender>
-                    <email>cliente@example.com</email>
-                </sender>
-                <shipping>
-                    <type>3</type>
-                </shipping>
-                <notificationURL>https://seu-servidor.com/api/notificacao_pagseguro</notificationURL>
-            </checkout>"""
-            
-            # Fazer requisição ao PagSeguro
-            response = requests.post(
-                f"{PAGSEGURO_WS}/v2/checkout",
-                params={
-                    'email': PAGSEGURO_EMAIL,
-                    'token': PAGSEGURO_TOKEN
+            # Criar preferência de pagamento
+            preference_data = {
+                "items": [
+                    {
+                        "title": f"Atualização Karaokê - Pacotes: {', '.join(dados['pacotes'])}",
+                        "quantity": 1,
+                        "unit_price": dados['valor'],
+                        "currency_id": "BRL"
+                    }
+                ],
+                "payer": {
+                    "email": "cliente@example.com"
                 },
-                data=xml_checkout,
-                headers={'Content-Type': 'application/xml; charset=UTF-8'}
-            )
+                "back_urls": {
+                    "success": f"https://karaoke-alex.onrender.com/pagamento_sucesso",
+                    "failure": f"https://karaoke-alex.onrender.com/pagamento_erro",
+                    "pending": f"https://karaoke-alex.onrender.com/pagamento_pendente"
+                },
+                "auto_return": "approved",
+                "notification_url": "https://karaoke-alex.onrender.com/api/webhook_mercadopago",
+                "external_reference": f"{dados['machine_id']}_{int(datetime.now().timestamp())}"
+            }
             
-            if response.status_code == 200:
-                # Extrair código do checkout
-                import xml.etree.ElementTree as ET
-                root = ET.fromstring(response.text)
-                checkout_code = root.find('code').text
-                
-                # Salvar transação no banco
-                c = self.conn.cursor()
-                c.execute('''INSERT INTO transacoes 
-                           (machine_id, codigo_pagseguro, reference, pacotes, valor, status, data_criacao, link_pagamento)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                         (dados['machine_id'], checkout_code, f"{dados['machine_id']}-{int(time.time())}",
-                          json.dumps(dados['pacotes']), dados['valor'], 'AGUARDANDO',
-                          datetime.now().isoformat(), f"{PAGSEGURO_URL}/v2/checkout/payment.html?code={checkout_code}"))
-                self.conn.commit()
-                
-                return jsonify({
-                    'success': True,
-                    'checkout_url': f"{PAGSEGURO_URL}/v2/checkout/payment.html?code={checkout_code}"
-                })
-            else:
-                return jsonify({
-                    'success': False,
-                    'error': 'Erro ao criar checkout no PagSeguro'
-                })
-                
+            preference_response = sdk.preference().create(preference_data)
+            preference = preference_response["response"]
+            
+            # Salvar transação no banco
+            c = self.conn.cursor()
+            c.execute('''INSERT INTO transacoes 
+                       (machine_id, preference_id, pacotes, tipo_arquivo, valor, status, data_criacao)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                     (dados['machine_id'], preference["id"], json.dumps(dados['pacotes']),
+                      dados.get('extensao', '.agb'), dados['valor'], 'PENDENTE',
+                      datetime.now().isoformat()))
+            self.conn.commit()
+            
+            return jsonify({
+                'success': True,
+                'init_point': preference["init_point"],  # URL do checkout
+                'preference_id': preference["id"]
+            })
+            
         except Exception as e:
             return jsonify({
                 'success': False,
                 'error': str(e)
             })
     
-    def processar_notificacao_pagseguro(self, dados):
-        """Processa notificação de pagamento do PagSeguro"""
+    def processar_webhook_mercadopago(self, dados):
+        """Processa notificação de pagamento do Mercado Pago"""
         try:
-            notification_code = dados.get('notificationCode')
-            notification_type = dados.get('notificationType')
-            
-            if notification_type == 'transaction':
-                # Consultar detalhes da transação
-                response = requests.get(
-                    f"{PAGSEGURO_WS}/v3/transactions/notifications/{notification_code}",
-                    params={
-                        'email': PAGSEGURO_EMAIL,
-                        'token': PAGSEGURO_TOKEN
-                    }
-                )
+            # Mercado Pago envia type e data.id
+            if dados.get("type") == "payment":
+                payment_id = dados["data"]["id"]
                 
-                if response.status_code == 200:
-                    import xml.etree.ElementTree as ET
-                    root = ET.fromstring(response.text)
+                # Buscar detalhes do pagamento
+                payment = sdk.payment().get(payment_id)
+                payment_info = payment["response"]
+                
+                if payment_info["status"] == "approved":
+                    # Pagamento aprovado - liberar pacotes
+                    external_ref = payment_info["external_reference"]
+                    machine_id = external_ref.split("_")[0]
                     
-                    # Extrair informações
-                    status = root.find('status').text
-                    reference = root.find('reference').text
+                    # Buscar transação
+                    c = self.conn.cursor()
+                    c.execute("SELECT pacotes, tipo_arquivo FROM transacoes WHERE machine_id = ? ORDER BY id DESC LIMIT 1", 
+                             (machine_id,))
+                    result = c.fetchone()
                     
-                    # Status PagSeguro:
-                    # 1 = Aguardando pagamento
-                    # 2 = Em análise
-                    # 3 = Paga
-                    # 4 = Disponível
-                    # 5 = Em disputa
-                    # 6 = Devolvida
-                    # 7 = Cancelada
-                    
-                    if status in ['3', '4']:  # Paga ou Disponível
-                        # Liberar pacotes
-                        machine_id = reference.split('-')[0]
+                    if result:
+                        pacotes, tipo_arquivo = result
                         
-                        # Buscar transação
-                        c = self.conn.cursor()
-                        c.execute("SELECT pacotes FROM transacoes WHERE reference = ?", (reference,))
-                        result = c.fetchone()
+                        # Criar liberação
+                        c.execute('''INSERT INTO liberacoes 
+                                   (machine_id, pacotes_liberados, tipo_arquivo, data_liberacao)
+                                   VALUES (?, ?, ?, ?)''',
+                                 (machine_id, pacotes, tipo_arquivo, datetime.now().isoformat()))
                         
-                        if result:
-                            pacotes = result[0]
-                            
-                            # Criar liberação
-                            c.execute('''INSERT INTO liberacoes 
-                                       (machine_id, pacotes_liberados, data_liberacao, baixado)
-                                       VALUES (?, ?, ?, 0)''',
-                                     (machine_id, pacotes, datetime.now().isoformat()))
-                            
-                            # Atualizar status da transação
-                            c.execute('''UPDATE transacoes 
-                                       SET status = 'PAGO', data_pagamento = ?
-                                       WHERE reference = ?''',
-                                     (datetime.now().isoformat(), reference))
-                            
-                            self.conn.commit()
+                        # Atualizar status da transação
+                        c.execute('''UPDATE transacoes 
+                                   SET status = 'PAGO', payment_id = ?, data_pagamento = ?
+                                   WHERE machine_id = ? AND status = 'PENDENTE' ''',
+                                 (payment_id, datetime.now().isoformat(), machine_id))
+                        
+                        self.conn.commit()
             
             return "OK", 200
             
         except Exception as e:
-            print(f"Erro ao processar notificação: {e}")
+            print(f"Erro webhook: {e}")
             return "ERROR", 500
     
     def verificar_pacotes_liberados(self, machine_id):
-        """Verifica se há pacotes liberados para download"""
+        """Verifica pacotes liberados para download"""
         c = self.conn.cursor()
-        c.execute('''SELECT pacotes_liberados FROM liberacoes 
+        c.execute('''SELECT pacotes_liberados, tipo_arquivo 
+                    FROM liberacoes 
                     WHERE machine_id = ? AND baixado = 0
-                    ORDER BY data_liberacao DESC LIMIT 1''', (machine_id,))
+                    ORDER BY data_liberacao DESC LIMIT 1''', 
+                 (machine_id,))
         result = c.fetchone()
         
         if result:
+            pacotes, tipo_arquivo = result
             return jsonify({
                 'tem_atualizacao': True,
-                'pacotes': json.loads(result[0])
+                'pacotes': json.loads(pacotes),
+                'tipo_arquivo': tipo_arquivo
             })
         else:
             return jsonify({
                 'tem_atualizacao': False
             })
     
-    def marcar_como_baixado(self, machine_id):
-        """Marca pacotes como baixados"""
+    def analisar_cliente_android(self, dados):
+        """Analisa cliente Android e retorna pacotes faltantes"""
+        machine_id = dados.get('machine_id')
+        pacotes_atuais = dados.get('pacotes_atuais', [])
+        
+        # Aqui você implementaria a lógica real de comparação
+        # Por enquanto, vamos simular
+        todos_pacotes = ['41A', '41B', '41C', '41D', '41E']
+        pacotes_faltantes = [p for p in todos_pacotes if p not in pacotes_atuais]
+        
+        # Registrar/atualizar cliente
         c = self.conn.cursor()
-        c.execute('''UPDATE liberacoes SET baixado = 1 
-                    WHERE machine_id = ? AND baixado = 0''', (machine_id,))
+        c.execute('''INSERT OR REPLACE INTO clientes 
+                   (machine_id, tipo_sistema, extensao, ultimo_acesso, pacotes_atuais)
+                   VALUES (?, ?, ?, ?, ?)''',
+                 (machine_id, 'android', '.mp4', datetime.now().isoformat(), 
+                  json.dumps(pacotes_atuais)))
         self.conn.commit()
         
-        return jsonify({'success': True})
+        return jsonify({
+            'machine_id': machine_id,
+            'pacotes_faltantes': pacotes_faltantes,
+            'url_pagamento': f'https://karaoke-alex.onrender.com/cliente/{machine_id}'
+        })
     
     def run(self, host='0.0.0.0', port=8000):
         """Inicia o servidor"""
         print(f"""
-        ╔════════════════════════════════════════════════╗
-        ║   SERVIDOR KARAOKÊ COM PAGSEGURO - AUTOMÁTICO   ║
-        ╚════════════════════════════════════════════════╝
+        ╔════════════════════════════════════════════════════╗
+        ║   SISTEMA KARAOKÊ UNIFICADO - MERCADO PAGO         ║
+        ╚════════════════════════════════════════════════════╝
         
-        Status: ONLINE
-        Endereço: http://{host}:{port}
-        PagSeguro: {'SANDBOX' if PAGSEGURO_SANDBOX else 'PRODUÇÃO'}
+        ✅ Suporte Windows (.AGB)
+        ✅ Suporte Android TV Box (.MP4)
+        ✅ Integração Mercado Pago
         
-        IMPORTANTE: Configure seu token do PagSeguro!
+        Servidor rodando em: http://{host}:{port}
         """)
         
         app.run(host=host, port=port, debug=False)
 
+# Inicializar e rodar
 if __name__ == "__main__":
-    sistema = SistemaPagamentoPagSeguro()
+    sistema = SistemaUnificadoMercadoPago()
     sistema.run()
