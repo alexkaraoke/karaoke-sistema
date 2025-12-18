@@ -1,6 +1,1 @@
-[render.yaml](https://github.com/user-attachments/files/24228497/render.yaml)
-[requirements.txt](https://github.com/user-attachments/files/24228498/requirements.txt)
-[README_SERVIDOR.md](https://github.com/user-attachments/files/24228502/README_SERVIDOR.md)
-[INICIO_RAPIDO.md](https://github.com/user-attachments/files/24228501/INICIO_RAPIDO.md)
-[testar_servidor.py](https://github.com/user-attachments/files/24228500/testar_servidor.py)
-[servidor_render_completo.py](https://github.com/user-attachments/files/24228499/servidor_render_completo.py)
+
